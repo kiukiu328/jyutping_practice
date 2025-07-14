@@ -155,9 +155,9 @@ export default function Home() {
 
   useEffect(() => {
     Promise.all([
-      fetch("/data.json").then((res) => res.json()),
-      fetch("/common_words.txt").then((res) => res.text()),
-      fetch("/big5_map.txt").then((res) => res.text()),
+      fetch("/jyutping_practice/data.json").then((res) => res.json()),
+      fetch("/jyutping_practice/common_words.txt").then((res) => res.text()),
+      fetch("/jyutping_practice/big5_map.txt").then((res) => res.text()),
     ]).then(([jsonData, textData, big5MapData]) => {
       setData(jsonData);
       
