@@ -60,16 +60,21 @@ interface GameState {
   currentSession: number;
   isSessionComplete: boolean;
   incorrectAnswers: IncorrectAnswer[];
+  currentSessionIncorrectAnswers: IncorrectAnswer[];
   showResultsDialog: boolean;
+  realtimeFeedbackEnabled: boolean;
 }
 
 interface RangeState {
   startIndex: number;
   endIndex: number;
   isCustomRange: boolean;
+  commonWordsCount: number;
 }
 
 const STORAGE_KEY = 'jyutping_practice_incorrect_answers';
+const CURRENT_SESSION_STORAGE_KEY = 'jyutping_practice_current_session_incorrect_answers';
+const SETTINGS_STORAGE_KEY = 'jyutping_practice_settings';
 
 // Load incorrect answers from localStorage
 const loadIncorrectAnswersFromStorage = (): IncorrectAnswer[] => {
@@ -100,10 +105,63 @@ const clearIncorrectAnswersFromStorage = () => {
   }
 };
 
+// Load current session incorrect answers from localStorage
+const loadCurrentSessionIncorrectAnswersFromStorage = (): IncorrectAnswer[] => {
+  try {
+    const stored = localStorage.getItem(CURRENT_SESSION_STORAGE_KEY);
+    return stored ? JSON.parse(stored) : [];
+  } catch (error) {
+    console.error('Failed to load current session incorrect answers from localStorage:', error);
+    return [];
+  }
+};
+
+// Save current session incorrect answers to localStorage
+const saveCurrentSessionIncorrectAnswersToStorage = (incorrectAnswers: IncorrectAnswer[]) => {
+  try {
+    localStorage.setItem(CURRENT_SESSION_STORAGE_KEY, JSON.stringify(incorrectAnswers));
+  } catch (error) {
+    console.error('Failed to save current session incorrect answers to localStorage:', error);
+  }
+};
+
+// Clear current session incorrect answers from localStorage
+const clearCurrentSessionIncorrectAnswersFromStorage = () => {
+  try {
+    localStorage.removeItem(CURRENT_SESSION_STORAGE_KEY);
+  } catch (error) {
+    console.error('Failed to clear current session incorrect answers from localStorage:', error);
+  }
+};
+
+// Load settings from localStorage
+const loadSettingsFromStorage = () => {
+  try {
+    const stored = localStorage.getItem(SETTINGS_STORAGE_KEY);
+    return stored ? JSON.parse(stored) : {};
+  } catch (error) {
+    console.error('Failed to load settings from localStorage:', error);
+    return {};
+  }
+};
+
+// Save settings to localStorage
+const saveSettingsToStorage = (settings: any) => {
+  try {
+    localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings));
+  } catch (error) {
+    console.error('Failed to save settings to localStorage:', error);
+  }
+};
+
 export default function Home() {
   const [data, setData] = useState<CharacterData[]>([]);
   const [commonWords, setCommonWords] = useState<string[]>([]);
   const [big5Map, setBig5Map] = useState<string[]>([]);
+  
+  // Load settings from localStorage
+  const storedSettings = loadSettingsFromStorage();
+  
   const [gameState, setGameState] = useState<GameState>({
     currentChar: "",
     correctJyutping: [],
@@ -113,19 +171,35 @@ export default function Home() {
     score: 0,
     totalQuestions: 0,
     isTypingCorrect: null,
-    questionsPerSession: 10,
+    questionsPerSession: storedSettings.questionsPerSession || 10,
     currentSession: 0,
     isSessionComplete: false,
     incorrectAnswers: [],
+    currentSessionIncorrectAnswers: [],
     showResultsDialog: false,
+    realtimeFeedbackEnabled: storedSettings.realtimeFeedbackEnabled !== undefined ? storedSettings.realtimeFeedbackEnabled : true,
   });
   const [rangeState, setRangeState] = useState<RangeState>({
-    startIndex: 0,
-    endIndex: 100,
-    isCustomRange: false,
+    startIndex: storedSettings.startIndex || 0,
+    endIndex: storedSettings.endIndex || 100,
+    isCustomRange: storedSettings.isCustomRange || false,
+    commonWordsCount: storedSettings.commonWordsCount || 1000,
   });
   const [loading, setLoading] = useState(true);
   const textFieldRef = useRef<HTMLInputElement>(null);
+
+  // Function to save current settings to localStorage
+  const saveCurrentSettings = () => {
+    const settings = {
+      questionsPerSession: gameState.questionsPerSession,
+      realtimeFeedbackEnabled: gameState.realtimeFeedbackEnabled,
+      startIndex: rangeState.startIndex,
+      endIndex: rangeState.endIndex,
+      isCustomRange: rangeState.isCustomRange,
+      commonWordsCount: rangeState.commonWordsCount,
+    };
+    saveSettingsToStorage(settings);
+  };
 
   // Function to play success sound
   const playSuccessSound = () => {
@@ -160,11 +234,11 @@ export default function Home() {
       fetch("/jyutping_practice/big5_map.txt").then((res) => res.text()),
     ]).then(([jsonData, textData, big5MapData]) => {
       setData(jsonData);
-      
+
       // Parse common words text into array of characters
       const commonWordsArray = textData.split('');
       setCommonWords(commonWordsArray);
-      
+
       // Parse big5_map data into array (split by newlines)
       const big5MapArray = big5MapData.split('\n').filter(line => line.trim() !== '');
       setBig5Map(big5MapArray);
@@ -172,13 +246,15 @@ export default function Home() {
       // Initialize range state with proper bounds
       setRangeState((prev) => ({
         ...prev,
-        endIndex: Math.min(100, commonWordsArray.length - 1),
+        endIndex: storedSettings.endIndex || Math.min(storedSettings.commonWordsCount || prev.commonWordsCount, commonWordsArray.length) - 1,
       }));
       // Load incorrect answers from localStorage
       const storedIncorrectAnswers = loadIncorrectAnswersFromStorage();
+      const storedCurrentSessionIncorrectAnswers = loadCurrentSessionIncorrectAnswersFromStorage();
       setGameState(prev => ({
         ...prev,
         incorrectAnswers: storedIncorrectAnswers,
+        currentSessionIncorrectAnswers: storedCurrentSessionIncorrectAnswers,
       }));
       setLoading(false);
     });
@@ -199,12 +275,34 @@ export default function Home() {
     };
   }, [gameState.showResult, gameState.currentChar]);
 
+  // Focus the text field when currentChar changes
+  useEffect(() => {
+    if (gameState.currentChar && textFieldRef.current) {
+      textFieldRef.current.focus();
+    }
+  }, [gameState.currentChar]);
+
+  // Save settings when they change
+  useEffect(() => {
+    if (!loading) {
+      saveCurrentSettings();
+    }
+  }, [gameState.questionsPerSession, gameState.realtimeFeedbackEnabled, rangeState.startIndex, rangeState.endIndex, rangeState.isCustomRange, rangeState.commonWordsCount, loading]);
+
   const getRandomCharacter = () => {
     if (!commonWords.length || !data.length) return;
 
     // Get the current range of characters to practice
-    const { startIndex, endIndex } = rangeState;
-    const practiceRange = commonWords.slice(startIndex, endIndex + 1);
+    let practiceRange: string[];
+
+    if (rangeState.isCustomRange) {
+      const { startIndex, endIndex } = rangeState;
+      practiceRange = commonWords.slice(startIndex, endIndex + 1);
+    } else {
+      // Use commonWordsCount for non-custom range
+      const end = Math.min(rangeState.commonWordsCount, commonWords.length);
+      practiceRange = commonWords.slice(0, end);
+    }
 
     if (practiceRange.length === 0) return;
 
@@ -225,11 +323,6 @@ export default function Home() {
         isCorrect: false,
         isTypingCorrect: null,
       }));
-
-      // Focus the text field after a short delay to ensure it's rendered
-      setTimeout(() => {
-        textFieldRef.current?.focus();
-      }, 100);
     } else {
       // If character not found, try again
       getRandomCharacter();
@@ -251,18 +344,20 @@ export default function Home() {
     const newScore = isCorrect ? gameState.score + 1 : gameState.score;
 
     let newIncorrectAnswers = gameState.incorrectAnswers;
-    if (!isCorrect) {
-      // Check if this character is already in the incorrect answers
-      const existingIndex = gameState.incorrectAnswers.findIndex(
-        (item) => item.char === gameState.currentChar
-      );
+    let newCurrentSessionIncorrectAnswers = gameState.currentSessionIncorrectAnswers;
 
+    if (!isCorrect) {
       const newIncorrectAnswer = {
         char: gameState.currentChar,
         correctJyutping: gameState.correctJyutping,
         userAnswer: gameState.userAnswer,
         timestamp: Date.now(),
       };
+
+      // Update accumulated incorrect answers
+      const existingIndex = gameState.incorrectAnswers.findIndex(
+        (item) => item.char === gameState.currentChar
+      );
 
       if (existingIndex >= 0) {
         // Update existing entry with new timestamp and user answer
@@ -275,10 +370,36 @@ export default function Home() {
         // Add new entry
         newIncorrectAnswers = [...gameState.incorrectAnswers, newIncorrectAnswer];
       }
+
+      // Update current session incorrect answers
+      const existingSessionIndex = gameState.currentSessionIncorrectAnswers.findIndex(
+        (item) => item.char === gameState.currentChar
+      );
+
+      if (existingSessionIndex >= 0) {
+        // Update existing entry in current session
+        newCurrentSessionIncorrectAnswers = [
+          ...gameState.currentSessionIncorrectAnswers.slice(0, existingSessionIndex),
+          newIncorrectAnswer,
+          ...gameState.currentSessionIncorrectAnswers.slice(existingSessionIndex + 1),
+        ];
+      } else {
+        // Add new entry to current session
+        newCurrentSessionIncorrectAnswers = [...gameState.currentSessionIncorrectAnswers, newIncorrectAnswer];
+      }
+    }else {
+      // If correct, remove from current session incorrect answers if it exists
+      newCurrentSessionIncorrectAnswers = gameState.currentSessionIncorrectAnswers.filter(
+        (item) => item.char !== gameState.currentChar
+      );
+      newIncorrectAnswers = newIncorrectAnswers.filter(
+        (item) => item.char !== gameState.currentChar
+      );
     }
 
-    // Save incorrect answers to localStorage
+    // Save both to localStorage
     saveIncorrectAnswersToStorage(newIncorrectAnswers);
+    saveCurrentSessionIncorrectAnswersToStorage(newCurrentSessionIncorrectAnswers);
 
     // Check if session is complete
     const isSessionComplete = newTotalQuestions >= gameState.questionsPerSession;
@@ -290,6 +411,7 @@ export default function Home() {
       score: newScore,
       totalQuestions: newTotalQuestions,
       incorrectAnswers: newIncorrectAnswers,
+      currentSessionIncorrectAnswers: newCurrentSessionIncorrectAnswers,
       isSessionComplete,
       showResultsDialog: isSessionComplete,
     }));
@@ -305,10 +427,6 @@ export default function Home() {
     }
 
     getRandomCharacter();
-    // Focus the text field after a short delay to ensure it's rendered
-    setTimeout(() => {
-      textFieldRef.current?.focus();
-    }, 100);
   };
 
   const resetGame = () => {
@@ -325,9 +443,28 @@ export default function Home() {
       currentSession: 0,
       isSessionComplete: false,
       incorrectAnswers: [],
+      currentSessionIncorrectAnswers: [],
       showResultsDialog: false,
+      realtimeFeedbackEnabled: true,
+    });
+    setRangeState({
+      startIndex: 0,
+      endIndex: 100,
+      isCustomRange: false,
+      commonWordsCount: 1000,
     });
     clearIncorrectAnswersFromStorage();
+    clearCurrentSessionIncorrectAnswersFromStorage();
+    // Reset settings to default and save to localStorage
+    const defaultSettings = {
+      questionsPerSession: 10,
+      realtimeFeedbackEnabled: true,
+      startIndex: 0,
+      endIndex: 100,
+      isCustomRange: false,
+      commonWordsCount: 1000,
+    };
+    saveSettingsToStorage(defaultSettings);
   };
 
   const startNewSession = () => {
@@ -344,17 +481,21 @@ export default function Home() {
       currentSession: prev.currentSession + 1,
       isSessionComplete: false,
       incorrectAnswers: prev.incorrectAnswers, // Keep previous incorrect answers
+      currentSessionIncorrectAnswers: [], // Clear current session incorrect answers
       showResultsDialog: false,
     }));
-    // Don't clear localStorage here - we want to accumulate incorrect answers across sessions
+    // Clear current session storage but keep accumulated incorrect answers
+    clearCurrentSessionIncorrectAnswersFromStorage();
     getRandomCharacter();
   };
 
   const clearStoredIncorrectAnswers = () => {
     clearIncorrectAnswersFromStorage();
+    clearCurrentSessionIncorrectAnswersFromStorage();
     setGameState(prev => ({
       ...prev,
       incorrectAnswers: [],
+      currentSessionIncorrectAnswers: [],
     }));
   };
 
@@ -373,8 +514,8 @@ export default function Home() {
   };
 
   const retryIncorrectAnswers = () => {
-    // Start a new session with only the incorrect answers
-    if (gameState.incorrectAnswers.length === 0) return;
+    // Start a new session with only the current session incorrect answers
+    if (gameState.currentSessionIncorrectAnswers.length === 0) return;
 
     setGameState(prev => ({
       ...prev,
@@ -386,21 +527,26 @@ export default function Home() {
       score: 0,
       totalQuestions: 0,
       isTypingCorrect: null,
-      questionsPerSession: prev.incorrectAnswers.length,
+      questionsPerSession: prev.currentSessionIncorrectAnswers.length,
       currentSession: prev.currentSession + 1,
       isSessionComplete: false,
       incorrectAnswers: prev.incorrectAnswers, // Keep the stored incorrect answers
+      currentSessionIncorrectAnswers: [], // Clear current session incorrect answers
       showResultsDialog: false,
     }));
 
-    // Get a random character from the incorrect answers
-    getRandomIncorrectCharacter();
+    // Clear current session storage but keep accumulated incorrect answers
+    clearCurrentSessionIncorrectAnswersFromStorage();
+    // Get a random character from the current session incorrect answers
+    getRandomCurrentSessionIncorrectCharacter();
   };
 
   const getRandomIncorrectCharacter = () => {
     if (gameState.incorrectAnswers.length === 0) {
-      // Fall back to regular random character if no incorrect answers
-      getRandomCharacter();
+      setGameState(prev => ({
+        ...prev,
+        showResultsDialog: true,
+      }));
       return;
     }
 
@@ -410,26 +556,53 @@ export default function Home() {
 
     // Find the character in the data
     const charData = data.find((item) => item.char === selectedIncorrect.char);
-
-    if (charData && charData.kCantonese) {
-      setGameState((prev) => ({
-        ...prev,
-        currentChar: selectedIncorrect.char,
-        correctJyutping: charData.kCantonese,
-        userAnswer: "",
-        showResult: false,
-        isCorrect: false,
-        isTypingCorrect: null,
-      }));
-
-      // Focus the text field after a short delay to ensure it's rendered
-      setTimeout(() => {
-        textFieldRef.current?.focus();
-      }, 100);
-    } else {
-      // If character not found, fall back to regular random character
-      getRandomCharacter();
+    if (!charData) {
+      console.error("Character data not found for:", selectedIncorrect.char);
+      return;
     }
+
+    setGameState((prev) => ({
+      ...prev,
+      currentChar: selectedIncorrect.char,
+      correctJyutping: charData.kCantonese,
+      userAnswer: "",
+      showResult: false,
+      isCorrect: false,
+      isTypingCorrect: null,
+    }));
+
+  };
+
+  const getRandomCurrentSessionIncorrectCharacter = () => {
+    if (gameState.currentSessionIncorrectAnswers.length === 0) {
+      setGameState(prev => ({
+        ...prev,
+        showResultsDialog: true,
+      }));
+      return;
+    }
+
+    // Get a random character from the current session incorrect answers
+    const randomIndex = Math.floor(Math.random() * gameState.currentSessionIncorrectAnswers.length);
+    const selectedIncorrect = gameState.currentSessionIncorrectAnswers[randomIndex];
+
+    // Find the character in the data
+    const charData = data.find((item) => item.char === selectedIncorrect.char);
+    if (!charData) {
+      console.error("Character data not found for:", selectedIncorrect.char);
+      return;
+    }
+
+    setGameState((prev) => ({
+      ...prev,
+      currentChar: selectedIncorrect.char,
+      correctJyutping: charData.kCantonese,
+      userAnswer: "",
+      showResult: false,
+      isCorrect: false,
+      isTypingCorrect: null,
+    }));
+
   };
 
   const retryStoredIncorrectAnswers = () => {
@@ -449,9 +622,12 @@ export default function Home() {
       questionsPerSession: prev.incorrectAnswers.length,
       currentSession: prev.currentSession + 1,
       isSessionComplete: false,
+      currentSessionIncorrectAnswers: [], // Clear current session incorrect answers
       showResultsDialog: false,
     }));
 
+    // Clear current session storage but keep accumulated incorrect answers
+    clearCurrentSessionIncorrectAnswersFromStorage();
     // Get a random character from the incorrect answers
     getRandomIncorrectCharacter();
   };
@@ -471,16 +647,34 @@ export default function Home() {
       ...prev,
       isCustomRange: isCustom,
       startIndex: isCustom ? prev.startIndex : 0,
-      endIndex: isCustom ? prev.endIndex : Math.min(100, commonWords.length - 1),
+      endIndex: isCustom ? prev.endIndex : Math.min(prev.commonWordsCount, commonWords.length) - 1,
     }));
+  };
+
+  const handleCommonWordsCountChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const newCount = parseInt(event.target.value, 10);
+    if (!isNaN(newCount) && newCount > 0) {
+      setRangeState((prev) => ({
+        ...prev,
+        commonWordsCount: newCount,
+        endIndex: prev.isCustomRange ? prev.endIndex : Math.min(newCount, commonWords.length) - 1,
+      }));
+    }
   };
 
   const getCurrentRangeText = () => {
     if (!commonWords.length) return "";
-    const { startIndex, endIndex } = rangeState;
-    const start = Math.max(0, startIndex);
-    const end = Math.min(endIndex, commonWords.length - 1);
-    return commonWords.slice(start, end + 1).join('');
+
+    if (rangeState.isCustomRange) {
+      const { startIndex, endIndex } = rangeState;
+      const start = Math.max(0, startIndex);
+      const end = Math.min(endIndex, commonWords.length - 1);
+      return commonWords.slice(start, end + 1).join('');
+    } else {
+      // Use commonWordsCount for non-custom range
+      const end = Math.min(rangeState.commonWordsCount, commonWords.length);
+      return commonWords.slice(0, end).join('');
+    }
   };
 
   const checkTypingCorrectness = (userInput: string) => {
@@ -504,7 +698,7 @@ export default function Home() {
   };
 
   const handleAnswerChange = (value: string) => {
-    const isTypingCorrect = checkTypingCorrectness(value);
+    const isTypingCorrect = gameState.realtimeFeedbackEnabled ? checkTypingCorrectness(value) : null;
 
     setGameState((prev) => ({
       ...prev,
@@ -533,7 +727,7 @@ export default function Home() {
     if (gameState.currentChar && commonWords.length && big5Map.length) {
       // Find the index of the current character in commonWords
       const charIndex = commonWords.indexOf(gameState.currentChar);
-      
+
       if (charIndex !== -1 && charIndex < big5Map.length) {
         // Get the corresponding Big5 encoding from the big5Map
         const big5Encoding = big5Map[charIndex];
@@ -631,6 +825,64 @@ export default function Home() {
               </Button>
             </Stack>
           </Stack>
+
+          {/* Show stored incorrect answers */}
+          <Box sx={{ mt: 2 }}>
+            <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+              錯誤答案詳情：
+            </Typography>
+            <Stack direction="row" spacing={1} flexWrap="wrap">
+              {gameState.incorrectAnswers.map((incorrect, index) => (
+                <Chip
+                  key={index}
+                  label={`${incorrect.char}: ${incorrect.correctJyutping.join(', ')}`}
+                  color="error"
+                  variant="outlined"
+                  size="small"
+                />
+              ))}
+            </Stack>
+          </Box>
+        </Paper>
+      )}
+
+      {/* Current Session Incorrect Answers */}
+      {gameState.currentSessionIncorrectAnswers.length > 0 && (
+        <Paper elevation={3} sx={{ p: 3, mb: 4 }}>
+          <Typography variant="h6" gutterBottom>
+            本次測驗錯誤答案
+          </Typography>
+          <Divider sx={{ mb: 2 }} />
+
+          <Stack direction="row" spacing={2} alignItems="center" justifyContent="space-between" flexWrap="wrap">
+            <Typography variant="body2" color="text.secondary">
+              本次測驗錯誤答案數: {gameState.currentSessionIncorrectAnswers.length}
+            </Typography>
+            <Button
+              variant="outlined"
+              color="warning"
+              size="small"
+              onClick={retryIncorrectAnswers}
+              sx={{ minWidth: 'auto' }}
+            >
+              重試本次錯誤
+            </Button>
+          </Stack>
+
+          {/* Show current session incorrect answers */}
+          <Box sx={{ mt: 2 }}>
+            <Stack direction="row" spacing={1} flexWrap="wrap">
+              {gameState.currentSessionIncorrectAnswers.map((incorrect, index) => (
+                <Chip
+                  key={index}
+                  label={`${incorrect.char}: ${incorrect.correctJyutping.join(', ')}`}
+                  color="error"
+                  variant="outlined"
+                  size="small"
+                />
+              ))}
+            </Stack>
+          </Box>
         </Paper>
       )}
 
@@ -660,6 +912,22 @@ export default function Home() {
           每次測驗會有 {gameState.questionsPerSession} 題。
           完成每次測驗後，您會看到結果摘要。
         </Typography>
+
+        <Divider sx={{ my: 2 }} />
+
+        <FormControlLabel
+          control={
+            <Switch
+              checked={gameState.realtimeFeedbackEnabled}
+              onChange={(e) => setGameState(prev => ({ ...prev, realtimeFeedbackEnabled: e.target.checked }))}
+              color="primary"
+            />
+          }
+          label="即時回饋"
+        />
+        <Typography variant="body2" color="text.secondary">
+          當開啟時，輸入框會顯示顏色提示和即時訊息來幫助您檢查拼寫。
+        </Typography>
       </Paper>
 
       {/* Range Selector */}
@@ -668,6 +936,27 @@ export default function Home() {
           字符範圍選擇
         </Typography>
         <Divider sx={{ mb: 2 }} />
+
+        {/* Common Words Count Setting */}
+        <Box sx={{ mb: 3 }}>
+          <TextField
+            label="最常見字符數量"
+            type="number"
+            value={rangeState.commonWordsCount}
+            onChange={handleCommonWordsCountChange}
+            inputProps={{
+              min: 1,
+              max: commonWords.length,
+              step: 1,
+            }}
+            size="small"
+            sx={{ width: 200 }}
+            disabled={rangeState.isCustomRange}
+          />
+          <Typography variant="caption" display="block" sx={{ mt: 1, color: 'text.secondary' }}>
+            設定要練習的最常見字符數量 (1-{commonWords.length})
+          </Typography>
+        </Box>
 
         <FormControlLabel
           control={
@@ -687,6 +976,63 @@ export default function Home() {
               <FormLabel component="legend">
                 選擇字符範圍 (位置 {rangeState.startIndex + 1} 到 {rangeState.endIndex + 1})
               </FormLabel>
+
+              {/* Text Input Fields for Direct Entry */}
+              <Stack direction="row" spacing={2} alignItems="center" sx={{ mt: 2, mb: 2 }}>
+                <TextField
+                  label="開始位置"
+                  type="number"
+                  value={rangeState.startIndex + 1}
+                  onChange={(e) => {
+                    const value = parseInt(e.target.value, 10);
+                    if (!isNaN(value) && value >= 1 && value <= commonWords.length) {
+                      const newStart = value - 1;
+                      setRangeState(prev => ({
+                        ...prev,
+                        startIndex: newStart,
+                        endIndex: Math.max(newStart, prev.endIndex)
+                      }));
+                    }
+                  }}
+                  inputProps={{
+                    min: 1,
+                    max: commonWords.length,
+                    step: 1,
+                  }}
+                  size="small"
+                  sx={{ width: 120 }}
+                />
+                <Typography variant="body2" color="text.secondary">
+                  到
+                </Typography>
+                <TextField
+                  label="結束位置"
+                  type="number"
+                  value={rangeState.endIndex + 1}
+                  onChange={(e) => {
+                    const value = parseInt(e.target.value, 10);
+                    if (!isNaN(value) && value >= 1 && value <= commonWords.length) {
+                      const newEnd = value - 1;
+                      setRangeState(prev => ({
+                        ...prev,
+                        startIndex: Math.min(prev.startIndex, newEnd),
+                        endIndex: newEnd
+                      }));
+                    }
+                  }}
+                  inputProps={{
+                    min: 1,
+                    max: commonWords.length,
+                    step: 1,
+                  }}
+                  size="small"
+                  sx={{ width: 120 }}
+                />
+                <Typography variant="caption" color="text.secondary">
+                  (1-{commonWords.length})
+                </Typography>
+              </Stack>
+
               <Slider
                 value={[rangeState.startIndex, rangeState.endIndex]}
                 onChange={handleRangeChange}
@@ -710,7 +1056,7 @@ export default function Home() {
         <Typography variant="body2" color="text.secondary" gutterBottom>
           {rangeState.isCustomRange ?
             `練習字符 ${rangeState.startIndex + 1}-${rangeState.endIndex + 1} (${rangeState.endIndex - rangeState.startIndex + 1} 個字符)` :
-            `練習最常見的 100 個字符`
+            `練習最常見的 ${rangeState.commonWordsCount} 個字符 (位置 1-${Math.min(rangeState.commonWordsCount, commonWords.length)})`
           }
         </Typography>
 
@@ -791,9 +1137,9 @@ export default function Home() {
                   mb: 3,
                   '& .MuiOutlinedInput-root': {
                     '& fieldset': {
-                      borderColor: gameState.isTypingCorrect === null ? 'rgba(0, 0, 0, 0.23)' :
+                      borderColor: (!gameState.realtimeFeedbackEnabled || gameState.isTypingCorrect === null) ? 'rgba(0, 0, 0, 0.23)' :
                         gameState.isTypingCorrect ? 'green' : 'red',
-                      borderWidth: gameState.isTypingCorrect !== null ? '2px' : '1px',
+                      borderWidth: (gameState.realtimeFeedbackEnabled && gameState.isTypingCorrect !== null) ? '2px' : '1px',
                     },
                   },
                 }}
@@ -801,7 +1147,7 @@ export default function Home() {
               />
 
               {/* Real-time feedback */}
-              {gameState.userAnswer && !gameState.showResult && (
+              {gameState.realtimeFeedbackEnabled && gameState.userAnswer && !gameState.showResult && (
                 <Box sx={{ mb: 2 }}>
                   {gameState.isTypingCorrect === true ? (
                     <Alert severity="success" sx={{ mb: 1 }}>
@@ -870,6 +1216,18 @@ export default function Home() {
                   重新開始
                 </Button>
 
+                {/* End Quiz Button - only show during active quiz */}
+                {gameState.currentChar && gameState.totalQuestions > 0 && (
+                  <Button
+                    variant="outlined"
+                    onClick={() => setGameState(prev => ({ ...prev, showResultsDialog: true }))}
+                    size="large"
+                    color="warning"
+                  >
+                    結束測驗
+                  </Button>
+                )}
+
                 {/* CUHK Lexis Search Button */}
                 {gameState.currentChar && (
                   <Button
@@ -923,7 +1281,7 @@ export default function Home() {
                   variant="outlined"
                 />
                 <Chip
-                  label={`錯誤: ${gameState.incorrectAnswers.length}`}
+                  label={`錯誤: ${gameState.currentSessionIncorrectAnswers.length}`}
                   color="error"
                   variant="outlined"
                 />
@@ -931,10 +1289,10 @@ export default function Home() {
             </Paper>
 
             {/* Incorrect Answers Table */}
-            {gameState.incorrectAnswers.length > 0 && (
+            {gameState.currentSessionIncorrectAnswers.length > 0 && (
               <Paper elevation={2} sx={{ p: 3 }}>
                 <Typography variant="h6" gutterBottom>
-                  錯誤答案 ({gameState.incorrectAnswers.length})
+                  本次測驗錯誤答案 ({gameState.currentSessionIncorrectAnswers.length})
                 </Typography>
                 <TableContainer>
                   <Table>
@@ -946,7 +1304,7 @@ export default function Home() {
                       </TableRow>
                     </TableHead>
                     <TableBody>
-                      {gameState.incorrectAnswers.map((incorrect, index) => (
+                      {gameState.currentSessionIncorrectAnswers.map((incorrect, index) => (
                         <TableRow key={index}>
                           <TableCell align="center">
                             <Typography variant="h4" component="div">
@@ -999,14 +1357,14 @@ export default function Home() {
             >
               開始新測驗
             </Button>
-            {gameState.incorrectAnswers.length > 0 && (
+            {gameState.currentSessionIncorrectAnswers.length > 0 && (
               <Button
                 variant="outlined"
                 onClick={retryIncorrectAnswers}
                 size="large"
                 color="warning"
               >
-                重試錯誤答案 ({gameState.incorrectAnswers.length})
+                重試本次錯誤答案 ({gameState.currentSessionIncorrectAnswers.length})
               </Button>
             )}
             <Button
